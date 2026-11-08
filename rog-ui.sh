@@ -2,7 +2,7 @@
 # rog-tune: client for the resident Spotlight/Settings process (it starts at login, so opening is near-instant).
 #   rog-ui.sh spotlight          show Spotlight (toggles); lives in a small resident process
 #   rog-ui.sh apps               browse every installed app (also: Alt+A inside Spotlight)
-#   rog-ui.sh clip               Spotlight pre-filled with "c ": your clipboard history (the same process records it)
+#   rog-ui.sh clip               Spotlight pre-filled with "c ": my clipboard history (the same process records it)
 #   rog-ui.sh settings | backup  open Settings / the backup chooser as ordinary windows (nothing stays in memory afterwards)
 #   rog-ui.sh start | restart | quit   manage the resident Spotlight process
 RT=${XDG_RUNTIME_DIR:-/tmp}; FIFO=$RT/rog-ui.fifo; PIDF=$RT/rog-ui.pid

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# rog-tune: the window a Spotlight timer or reminder shows when it rings. Stays until you dismiss it (Enter / Esc); S snoozes 5 minutes.
+# rog-tune: the window a Spotlight timer or reminder shows when it rings. Stays until I dismiss it (Enter / Esc); S snoozes 5 minutes.
 #   alarm.py "message"        (started by systemd-run --user when the time comes)
 import json, os, subprocess, sys, threading, time
 from pathlib import Path

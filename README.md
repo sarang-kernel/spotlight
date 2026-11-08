@@ -1,6 +1,6 @@
 # Spotlight for i3
 
-A macOS-style launcher for X11 window managers (written for i3 on Arch). One search box for apps, open windows, files, maths and unit conversion, clipboard history and system actions. It is a small resident GTK3 process, so it opens in about 20 ms.
+I missed macOS's Spotlight, so I built one for i3. One search box for apps, open windows, files, maths and unit conversion, clipboard history and system actions. It's a small resident GTK3 process, so it pops up in about 20 ms, which is faster than I can change my mind about what I wanted.
 
 ## What it does
 | Type | Result |
@@ -17,18 +17,18 @@ A macOS-style launcher for X11 window managers (written for i3 on Arch). One sea
 
 Keys: **Enter** run, **Ctrl+Enter** reveal in the file manager, **Ctrl+C** (or **Alt+Enter**) copy (a file copies as the file, an image as the picture), **Ctrl+J/K** or arrows move, **Alt+1..9** pick a row, hold **Space** (or **Ctrl+Y**) to preview, **Alt+A** browse all apps, **Esc** close.
 
-Light, dark or night-schedule look, with a configurable accent colour: set `APPEARANCE`, `ACCENT_MODE`, `ACCENT_HEX`, `SPOT_OPACITY` in `~/.config/rog/settings.env` (`KEY="value"` lines). Your own shortcuts go in `~/.config/spotlight/aliases` (`name = folder | file | URL | command`).
+It comes in light, dark or follow-the-clock flavours, with an accent colour of my choosing: `APPEARANCE`, `ACCENT_MODE`, `ACCENT_HEX` and `SPOT_OPACITY` live in `~/.config/rog/settings.env` (plain `KEY="value"` lines). My own shortcuts go in `~/.config/spotlight/aliases` (`name = folder | file | URL | command`).
 
-## Power menu
-`power-menu.py` (Super+Escape): Lock, Log out, Sleep, Hibernate, Restart, Shut down as one row of tiles. `h`/`l` or arrows move, `1`-`6` pick, Enter runs; destructive actions need a second Enter.
+## The power menu
+I wanted pretty shutdown buttons, so `power-menu.py` (Super+Escape) shows Lock, Log out, Sleep, Hibernate, Restart and Shut down as one row of tiles. `h`/`l` or arrows move, `1`-`6` pick, Enter runs. The destructive ones need a second Enter, so I can't nuke my session by accident.
 
 ## Install
 ```
 ./install.sh        # copies the scripts to ~/.config/scripts and prints the i3 lines to add
 ```
-Needs: `python-gobject gtk3 libqalculate plocate xclip`; optional `ripgrep poppler` (deep search), `imagemagick` (previews), a Papirus or Adwaita icon theme.
+Needs: `python-gobject gtk3 libqalculate plocate xclip`. Optional: `ripgrep poppler` (deep search), `imagemagick` (previews), a Papirus or Adwaita icon theme.
 
-## Honest notes
-- Some actions call scripts of the author's own setup (performance modes, night tint, backups, update/rollback). Without those scripts the rows are simply missing or do nothing; everything above works on its own.
-- Run it with `rog-ui.sh start`; `rog-ui.sh restart` after editing the script. Start it from your desktop session, not over ssh: it passes its environment to everything it launches.
-- No licence has been chosen yet.
+## Things I should confess
+- Some actions call scripts from my own setup (performance modes, night tint, backups, update/rollback). Without those scripts the rows are simply missing or do nothing; everything above works on its own.
+- Start it with `rog-ui.sh start`, and run `rog-ui.sh restart` after editing the script. Start it from the desktop session, not over ssh: it hands its environment to everything it launches, and I learned that the hard way.
+- I haven't picked a licence yet.
