@@ -2,6 +2,13 @@
 
 I missed macOS's Spotlight, so I built one for i3. One search box for apps, open windows, files, maths and unit conversion, clipboard history and system actions. It's a small resident GTK3 process, so it pops up in about 20 ms, which is faster than I can change my mind about what I wanted.
 
+## What it looks like
+![Searching for "kitty": an open window, the app, files and a web search](docs/img/search.png)
+*Typing a name: open windows first, then the app, then files. Alt+1..9 picks a row.*
+
+![Typing =2+2*8 gives 18 as the top result](docs/img/maths.png)
+*Typing a sum: the answer comes first and Enter copies it.*
+
 ## What it does
 | Type | Result |
 |---|---|
