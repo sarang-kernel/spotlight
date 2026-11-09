@@ -3,11 +3,28 @@
 I missed macOS's Spotlight, so I built one for i3. One search box for apps, open windows, files, maths and unit conversion, clipboard history and system actions. It's a small resident GTK3 process, so it pops up in about 20 ms, which is faster than I can change my mind about what I wanted.
 
 ## What it looks like
-![Searching for "kitty": an open window, the app, files and a web search](docs/img/search.png)
-*Typing a name: open windows first, then the app, then files. Alt+1..9 picks a row.*
+![A short screen recording of Spotlight: apps, maths, units, emoji, timers, clipboard history, file preview, commands and open windows](docs/img/demo.gif)
+*Roughly a minute of me typing at it. The stills below are the same things, full screen, so you can see where it sits.*
 
-![Typing =2+2*8 gives 18 as the top result](docs/img/maths.png)
-*Typing a sum: the answer comes first and Enter copies it.*
+These were all taken on a throwaway virtual screen, so none of my real windows leak into them.
+
+| | |
+|---|---|
+| **Apps, files and actions in one box** | **Maths** |
+| ![Searching for "settings": the Settings app, other settings apps and matching files](docs/img/search.png) | ![15% of 80 gives 12](docs/img/maths.png) |
+| **Units** | **Emoji** (`:smile`) |
+| ![5 km in mi gives 3.106855961 mi](docs/img/units.png) | ![:smile finds the cat face with wry smile](docs/img/emoji.png) |
+| **Timers and reminders** | **Clipboard history** (`c word`) |
+| ![timer 25m offers a 25 minute timer](docs/img/timer.png) | ![c demo finds an old clipboard entry](docs/img/clipboard.png) |
+| **Files** | **Preview** (hold Space or `Ctrl+Y`) |
+| ![spotlight.py found in four places](docs/img/files.png) | ![Previewing the top of spotlight.py inside the results](docs/img/preview.png) |
+| **System actions** | **Run a command** (`> cmd`) |
+| ![lock offers Lock screen and Freeze auto-rotate](docs/img/actions.png) | ![> uname -a offers to run it](docs/img/command.png) |
+| **Open windows** (`w name`) | **All apps** (`Alt+A`) |
+| ![w demo lists matching windows with their workspace](docs/img/windows.png) | ![A grid of every installed app](docs/img/allapps.png) |
+
+![The power menu: Lock, Log out, Sleep, Hibernate, Restart, Shut down](docs/img/power.png)
+*The power menu (`Super+Escape`).*
 
 ## What it does
 | Type | Result |
