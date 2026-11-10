@@ -26,6 +26,9 @@ These were all taken on a throwaway virtual screen, so none of my real windows l
 ![The power menu: Lock, Log out, Sleep, Hibernate, Restart, Shut down](docs/img/power.png)
 *The power menu (`Super+Escape`).*
 
+## Documentation
+Every kind of query, every key, how the clipboard history, timers and deep search work, and how the resident process is built: **[https://sarang-kernel.github.io/i3-dotfiles/spotlight/](https://sarang-kernel.github.io/i3-dotfiles/spotlight/)**.
+
 ## What it does
 | Type | Result |
 |---|---|
