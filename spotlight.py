@@ -588,9 +588,10 @@ def filtered_files(flt, text):
     cutoff = {"today": 86400, "day": 86400, "week": 7 * 86400, "month": 30 * 86400}.get(flt.get("modified", ""), 0)
     now = time.time()
     for p in out:
-        if not p.startswith(ROOTS) or any(j in p for j in JUNK): continue
+        trash = "/.local/share/Trash/" in p
+        if not p.startswith(ROOTS) or (not trash and any(j in p for j in JUNK)): continue      # caches, site-packages, .git ... stay out; Trash and hidden folders come with a marker
         rel = p[len(home):] if p.startswith(home) else p
-        if any(c.startswith(".") for c in rel.split("/")[:-1]): continue            # hidden folders are noise for a filtered listing
+        tag = "trash" if trash else "hidden" if any(c.startswith(".") for c in rel.split("/")[:-1]) else ""
         if exts and not p.lower().endswith(exts): continue
         if flt.get("in") and flt["in"] not in p.lower().replace(home.lower(), ""): continue
         try: st = os.stat(p)
@@ -598,16 +599,17 @@ def filtered_files(flt, text):
         if folder and not stat.S_ISDIR(st.st_mode): continue
         if exts and stat.S_ISDIR(st.st_mode): continue
         if cutoff and now - st.st_mtime > cutoff: continue
-        res.append((st.st_mtime, p, stat.S_ISDIR(st.st_mode)))
-    res.sort(reverse=True)
+        res.append((tag != "", st.st_mtime, p, stat.S_ISDIR(st.st_mode), tag))
+    res.sort(key=lambda r: (r[0], -r[1]))                          # ordinary files first (newest first), then the trash / hidden ones
     items = Results()
-    for mt, p, isdir in res:                                       # the details line is built when the row is drawn (sub is a function), so thousands of rows stay cheap
-        items.append(Item("Folder" if isdir else "File", os.path.basename(p), lambda p=p: file_meta(p) + "  ·  " + os.path.dirname(p).replace(home, "~"),
+    for _, mt, p, isdir, tag in res:                                       # the details line is built when the row is drawn (sub is a function), so thousands of rows stay cheap
+        items.append(Item("Folder" if isdir else "File", os.path.basename(p) + (f"   ({tag})" if tag else ""), lambda p=p: file_meta(p) + "  ·  " + os.path.dirname(p).replace(home, "~"),
                           "folder" if isdir else icon_for(p), 100 - len(items),
                           run=lambda p=p: spawn(["xdg-open", p]), alt=lambda p=p: p, reveal=lambda p=p: spawn(["xdg-open", os.path.dirname(p)]), key="file:" + p))
     if len(items) > MAXROWS:
         label = "/".join(k.lstrip(".") for k in kinds) if kinds else "matches"
-        items.note = f"{len(items):,} {label} files, newest first  ·  scroll or keep pressing ↓ for the rest"
+        marked = sum(1 for r in res if r[0])
+        items.note = f"{len(items):,} {label} files, newest first" + (f" ({marked} in trash or hidden folders, listed last)" if marked else "") + "  ·  scroll or keep pressing ↓ for the rest"
     return items
 
 ALIASES_FILE = HOME / ".config/spotlight/aliases"
@@ -1020,6 +1022,7 @@ class Spot(Gtk.Window):
         self.footer = Gtk.Label(label="Ctrl+Y preview   ·   Ctrl+Enter reveal or run in terminal   ·   Ctrl+C copy   ·   Alt+A all apps", xalign=0)
         self.footer.get_style_context().add_class("foot"); box.pack_start(self.footer, False, False, 0)
         self.items = []; self.timer = 0; self.focused = False; self.deep_q = None
+        self.shown_q = None; self.want = None; self.deferred = None; self.cv = threading.Condition(); self.worker = None
         self.home_items = []; self.home_widgets = []; self.home_sel = 0; self.mode = "list"; self.revealed = False
         self.chg = self.entry.connect("changed", self.on_changed)
         self.connect("key-press-event", self.on_key)
@@ -1115,17 +1118,17 @@ class Spot(Gtk.Window):
         self.apply_alpha()
         if self.timer:
             GLib.source_remove(self.timer); self.timer = 0
-        self.deep_q = None
+        self.deep_q = None; self.shown_q = None; self.deferred = None
         self.entry.handler_block(self.chg); self.entry.set_text(""); self.entry.handler_unblock(self.chg)
         self.show_home()
         self.focused = False; self.set_opacity(0.0)
         self.show(); self.present(); self.entry.grab_focus()
 
     def on_changed(self, *a):
-        self.deep_q = None
+        self.deep_q = None; self.deferred = None
         if self.timer:
             GLib.source_remove(self.timer)
-        self.timer = GLib.timeout_add(90, self.refresh)   # debounce: search once typing pauses
+        self.timer = GLib.timeout_add(40, self.refresh)   # short debounce; the search itself runs off the main loop, newest query wins
 
     def refresh(self):
         self.timer = 0
@@ -1134,8 +1137,38 @@ class Spot(Gtk.Window):
             self.show_home(); return False
         if re.match(r"^/\s*\S", q):                        # "/ phrase" goes straight to the deep search
             self.start_deep(q[1:].strip()); return False
-        self.render(search(q), q)
+        with self.cv:
+            self.want = q
+            if not self.worker:
+                self.worker = threading.Thread(target=self.search_loop, daemon=True); self.worker.start()
+            self.cv.notify()
         return False
+
+    def search_loop(self):                                 # one worker: takes the newest query, skips the ones typed past
+        while True:
+            with self.cv:
+                while self.want is None: self.cv.wait()
+                q, self.want = self.want, None
+            res = None
+            for _ in range(2):
+                try: res = search(q); break
+                except Exception: res = None
+            GLib.idle_add(self.deliver, q, res if res is not None else Results())
+
+    def deliver(self, q, res):
+        if self.entry.get_text().strip() != q: return False          # typed on since: a newer answer is on its way
+        self.render(res, q); self.shown_q = q
+        d, self.deferred = self.deferred, None
+        if d: d()
+        return False
+
+    def stale(self):                                       # what is on screen is not the answer to what is in the box
+        q = self.entry.get_text().strip()
+        return bool(q) and self.shown_q != q and not (self.deep_q and q.startswith("/"))
+
+    def after_fresh(self, fn):                             # Enter / Alt+N pressed while the results lag behind: do it on the results of the final text
+        if not self.stale(): fn(); return
+        self.deferred = fn; self.footer.set_text("Still searching, it will open as soon as the results are in..."); self.footer.set_visible(True)
 
     # ---- empty state: recent apps as a grid, recent files as a list (4 each)
     def clear_home(self):
@@ -1330,7 +1363,7 @@ class Spot(Gtk.Window):
 
     def start_deep(self, q):
         import threading
-        self.deep_q = q
+        self.deep_q = q; self.shown_q = self.entry.get_text().strip()
         self.render([], q, f"Searching inside documents for “{q}”…")
         def work():
             res = deep_items(q)
@@ -1486,12 +1519,13 @@ class Spot(Gtk.Window):
             self.move(-1); return True
         if k in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             m = 2 if alt else 1 if (ctrl or shift) else 0
-            if home: self.activate_home(self.home_sel, m)
+            if self.stale(): self.after_fresh(lambda: self.activate(0, m))
+            elif home: self.activate_home(self.home_sel, m)
             else:
                 row = self.list.get_selected_row(); self.activate(row.get_index() if row else 0, m)
             return True
-        if alt and Gdk.KEY_1 <= k <= Gdk.KEY_9 and not home:
-            self.activate(k - Gdk.KEY_1, 0); return True
+        if alt and Gdk.KEY_1 <= k <= Gdk.KEY_9 and (not home or self.stale()):
+            n = k - Gdk.KEY_1; self.after_fresh(lambda: self.activate(n, 0)); return True
         if ctrl and not shift and k == Gdk.KEY_c and not self.entry.get_selection_bounds():   # Ctrl+C copies the highlighted result (text in the box still copies as usual)
             if home: self.activate_home(self.home_sel, 2)
             else:
