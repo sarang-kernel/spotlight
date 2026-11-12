@@ -566,6 +566,10 @@ def kind_exts(kinds):
 def ere(s):                                                        # escape for plocate --regex (POSIX extended)
     return re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", s)
 
+_FCACHE = {}
+def glob_esc(s):                                                   # plocate globs: * ? [ ] and the backslash are special
+    return re.sub(r"([*?\[\]\\])", r"\\\1", s)
+
 _ICONS = {}
 def icon_for(p):                                                   # one Gio lookup per extension, not per file
     e = os.path.splitext(p)[1].lower()
@@ -577,9 +581,15 @@ def filtered_files(flt, text):
     folder = "folder" in kinds
     home = str(HOME); inn = ere(flt["in"]) if flt.get("in") else ""
     words = "[^/]*".join(ere(w) for w in text.split())
-    if exts:                                                       # every file of those types: no cap, the regex does the whole job
-        pat = ["plocate", "--regex", "-i", "--", f"^{ere(home)}/.*{inn}.*/[^/]*{words}[^/]*({'|'.join(ere(e) for e in exts)})$"]
-        out = sh(pat, 6.0).splitlines()
+    if exts:                                                       # every file of those types: no cap. One glob per extension uses plocate's trigram index (a few ms), not a scan of the whole database
+        key = (exts, text.lower()); hit = _FCACHE.get(key)
+        if hit and time.time() - hit[0] < 20: out = hit[1]         # typing ".pdf" then ".pdf r" asks the same question twice
+        else:
+            base = ("*" + "*".join(glob_esc(w) for w in text.split()) + "*") if text else "*"
+            out = []
+            for e in exts: out += sh(["plocate", "-i", "-b", "--", base + glob_esc(e)], 4.0).splitlines()
+            if len(_FCACHE) > 8: _FCACHE.clear()
+            _FCACHE[key] = (time.time(), out)
     elif text:
         out = sh(["plocate", "-i", "-b", "-l", "4000", "--", text.replace(" ", "*")], 3.0).splitlines()
     else:
@@ -1128,7 +1138,7 @@ class Spot(Gtk.Window):
         self.deep_q = None; self.deferred = None
         if self.timer:
             GLib.source_remove(self.timer)
-        self.timer = GLib.timeout_add(40, self.refresh)   # short debounce; the search itself runs off the main loop, newest query wins
+        self.timer = GLib.timeout_add(20, self.refresh)   # very short debounce; the search itself runs off the main loop, newest query wins
 
     def refresh(self):
         self.timer = 0
