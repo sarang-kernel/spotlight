@@ -4,7 +4,7 @@
 #   Ctrl+J/K or Ctrl+N/P or Up/Down move   Alt+1..9 pick a row   Tab next row
 #   prefixes:  =2+2 (maths)   c word (clipboard history)   > cmd (run a command)   w word (windows only)
 # Searches while I type (plocate for files, qalc for maths). Closes itself when it loses focus. Nothing stays resident.
-import json, math, os, re, shlex, subprocess, sys, threading, time
+import stat, json, math, os, re, shlex, subprocess, sys, threading, time
 from pathlib import Path
 import gi
 gi.require_version("Gtk", "3.0"); gi.require_version("Gdk", "3.0")
@@ -16,6 +16,7 @@ STATE.mkdir(parents=True, exist_ok=True)
 HIST = STATE / "history.json"
 SCRIPTS = HOME / ".config/scripts"
 MAXROWS = 10
+ROWCHUNK = 60                                       # rows drawn at once in a long listing
 
 # ---------------------------------------------------------------- helpers
 def sh(cmd, timeout=1.0):
@@ -526,50 +527,87 @@ def alarm_items(q):
 
 # ---------------------------------------------------------------- more sources (each is wrapped so one failure cannot break Spotlight)
 KINDS = {"pdf": (".pdf",), "doc": (".doc", ".docx", ".odt", ".rtf", ".pages"), "slides": (".ppt", ".pptx", ".odp", ".key"),
-         "sheet": (".xls", ".xlsx", ".ods", ".csv", ".tsv"), "image": (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".bmp", ".tif", ".tiff"),
+         "sheet": (".xls", ".xlsx", ".ods", ".csv", ".tsv"), "image": (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".bmp", ".tif", ".tiff", ".heic"),
          "text": (".txt", ".md", ".org", ".rst", ".tex", ".bib"), "code": (".py", ".rs", ".c", ".h", ".cpp", ".js", ".ts", ".sh", ".go", ".java", ".ipynb", ".r"),
-         "audio": (".mp3", ".flac", ".ogg", ".opus", ".wav", ".m4a"), "video": (".mp4", ".mkv", ".webm", ".avi", ".mov"), "archive": (".zip", ".tar", ".gz", ".xz", ".7z", ".rar", ".tgz")}
+         "audio": (".mp3", ".flac", ".ogg", ".opus", ".wav", ".m4a", ".aac", ".wma"), "video": (".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".wmv", ".flv", ".mpg", ".mpeg"),
+         "archive": (".zip", ".tar", ".gz", ".xz", ".7z", ".rar", ".tgz", ".bz2", ".zst"), "ebook": (".epub", ".mobi", ".azw3", ".djvu")}
+KIND_KEYS = ("kind", "type", "filetype", "ft", "ext")
+BARE_EXT = re.compile(r"^\.(?=[a-z0-9]*[a-z])[a-z0-9]{1,10}$", re.I)       # .pdf  .docx  .mov  .7z  (needs a letter, so ".5" stays a number)
+
+class Results(list):
+    """A result list that can carry a line for the footer (the filtered listings say how many files matched)."""
+    note = None
 
 def split_filters(q):
-    """kind:pdf  in:notes  modified:today|week|month   (any order); returns ({filters}, remaining text)."""
-    flt = {}; rest = []
+    """kind:pdf  filetype:docx,odt  ext:mov  .pdf  in:notes  modified:today|week|month   (any order); returns ({filters}, remaining text).
+    A bare .ext word (".pdf") is a file type filter too; flt["bare"] is True when that is the only reason there is a filter."""
+    flt = {}; rest = []; kinds = []; explicit = False
     for tok in q.split():
-        m = re.match(r"^(kind|type|in|modified|mod):(\S*)$", tok, re.I)
+        m = re.match(r"^(kind|type|filetype|ft|ext|in|modified|mod):(\S*)$", tok, re.I)
         if m and m.group(2):
-            k = m.group(1).lower(); k = {"type": "kind", "mod": "modified"}.get(k, k); flt[k] = m.group(2).lower()
+            k = m.group(1).lower(); k = {"mod": "modified"}.get(k, k)
+            if k in KIND_KEYS: kinds += [x for x in m.group(2).lower().split(",") if x]; explicit = True
+            else: flt[k] = m.group(2).lower()
+        elif BARE_EXT.match(tok): kinds.append(tok.lower())
         else: rest.append(tok)
+    if kinds:
+        flt["kind"] = kinds
+        flt["bare"] = not explicit and set(flt) <= {"kind", "bare"}
     return flt, " ".join(rest)
 
+def kind_exts(kinds):
+    """['pdf', 'video', '.docx', 'mov'] -> ('.pdf', '.mp4', ..., '.docx', '.mov'), or None for the folder kind. Unknown names are taken as the extension itself."""
+    exts = []
+    for k in kinds:
+        if k == "folder": continue
+        exts += KINDS.get(k) or ("." + k.lstrip("."),)
+    return tuple(dict.fromkeys(exts))
+
+def ere(s):                                                        # escape for plocate --regex (POSIX extended)
+    return re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", s)
+
+_ICONS = {}
+def icon_for(p):                                                   # one Gio lookup per extension, not per file
+    e = os.path.splitext(p)[1].lower()
+    if e not in _ICONS: _ICONS[e] = Gio.content_type_get_icon(Gio.content_type_guess(p, None)[0])
+    return _ICONS[e]
+
 def filtered_files(flt, text):
-    kind = flt.get("kind"); exts = KINDS.get(kind) if kind else None
-    if kind and kind != "folder" and not exts: return []
-    home = str(HOME); hre = re.escape(home); inn = re.escape(flt["in"]) if flt.get("in") else ""
-    if text:
-        pat = ["plocate", "-i", "-b", "-l", "4000", "--", text.replace(" ", "*")]
-    elif exts:
-        pat = ["plocate", "--regex", "-i", "-l", "8000", "--", f"^{hre}/.*{inn}.*({'|'.join(re.escape(e) for e in exts)})$"]
+    kinds = flt.get("kind") or []; exts = kind_exts(kinds) if kinds else None
+    folder = "folder" in kinds
+    home = str(HOME); inn = ere(flt["in"]) if flt.get("in") else ""
+    words = "[^/]*".join(ere(w) for w in text.split())
+    if exts:                                                       # every file of those types: no cap, the regex does the whole job
+        pat = ["plocate", "--regex", "-i", "--", f"^{ere(home)}/.*{inn}.*/[^/]*{words}[^/]*({'|'.join(ere(e) for e in exts)})$"]
+        out = sh(pat, 6.0).splitlines()
+    elif text:
+        out = sh(["plocate", "-i", "-b", "-l", "4000", "--", text.replace(" ", "*")], 3.0).splitlines()
     else:
-        pat = ["plocate", "--regex", "-i", "-l", "4000", "--", f"^{hre}/.*{inn or '[^/]'}[^/]*$"]
-    out = sh(pat, 3.0).splitlines(); res = []
+        out = sh(["plocate", "--regex", "-i", "-l", "4000", "--", f"^{ere(home)}/.*{inn or '[^/]'}[^/]*$"], 3.0).splitlines()
+    res = []
     cutoff = {"today": 86400, "day": 86400, "week": 7 * 86400, "month": 30 * 86400}.get(flt.get("modified", ""), 0)
+    now = time.time()
     for p in out:
         if not p.startswith(ROOTS) or any(j in p for j in JUNK): continue
         rel = p[len(home):] if p.startswith(home) else p
         if any(c.startswith(".") for c in rel.split("/")[:-1]): continue            # hidden folders are noise for a filtered listing
         if exts and not p.lower().endswith(exts): continue
-        if kind == "folder" and not os.path.isdir(p): continue
         if flt.get("in") and flt["in"] not in p.lower().replace(home.lower(), ""): continue
-        try: mt = os.stat(p).st_mtime
+        try: st = os.stat(p)
         except OSError: continue
-        if cutoff and time.time() - mt > cutoff: continue
-        res.append((mt, p))
+        if folder and not stat.S_ISDIR(st.st_mode): continue
+        if exts and stat.S_ISDIR(st.st_mode): continue
+        if cutoff and now - st.st_mtime > cutoff: continue
+        res.append((st.st_mtime, p, stat.S_ISDIR(st.st_mode)))
     res.sort(reverse=True)
-    items = []
-    for mt, p in res[:MAXROWS]:
-        isdir = os.path.isdir(p)
-        items.append(Item("Folder" if isdir else "File", os.path.basename(p), file_meta(p) + "  ·  " + os.path.dirname(p).replace(home, "~"),
-                          "folder" if isdir else Gio.content_type_get_icon(Gio.content_type_guess(p, None)[0]), 100 - len(items),
+    items = Results()
+    for mt, p, isdir in res:                                       # the details line is built when the row is drawn (sub is a function), so thousands of rows stay cheap
+        items.append(Item("Folder" if isdir else "File", os.path.basename(p), lambda p=p: file_meta(p) + "  ·  " + os.path.dirname(p).replace(home, "~"),
+                          "folder" if isdir else icon_for(p), 100 - len(items),
                           run=lambda p=p: spawn(["xdg-open", p]), alt=lambda p=p: p, reveal=lambda p=p: spawn(["xdg-open", os.path.dirname(p)]), key="file:" + p))
+    if len(items) > MAXROWS:
+        label = "/".join(k.lstrip(".") for k in kinds) if kinds else "matches"
+        items.note = f"{len(items):,} {label} files, newest first  ·  scroll or keep pressing ↓ for the rest"
     return items
 
 ALIASES_FILE = HOME / ".config/spotlight/aliases"
@@ -750,8 +788,9 @@ def search(q):
     if ai: return ai
     flt, rest = split_filters(q)
     if flt:
-        try: return filtered_files(flt, rest)
-        except Exception: return []
+        try: res = filtered_files(flt, rest)
+        except Exception: res = Results()
+        if res or not flt.get("bare"): return res        # ".bashrc" or ".config" with no such extension: carry on as an ordinary search
     if q.startswith(":") and len(q) > 1:
         try: return emoji_items(q[1:].strip())
         except Exception: return []
@@ -971,7 +1010,13 @@ class Spot(Gtk.Window):
         self.sep = Gtk.Separator(); box.pack_start(self.sep, False, False, 0)
         self.home = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); box.pack_start(self.home, False, False, 0)
         self.list = Gtk.ListBox(); self.list.set_selection_mode(Gtk.SelectionMode.SINGLE); self.list.set_activate_on_single_click(True)
-        box.pack_start(self.list, False, False, 0)
+        self.lsc = Gtk.ScrolledWindow(); self.lsc.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.lsc.set_propagate_natural_height(True); self.lsc.set_max_content_height(700); self.lsc.add(self.list)   # ten rows fit; longer listings scroll
+        self.list.connect("notify::visible", lambda w, _p: self.lsc.set_visible(w.get_visible()))
+        self.lsc.get_vadjustment().connect("value-changed", self.on_list_scroll)
+        self.nrows = 0
+        box.pack_start(self.lsc, False, False, 0)
+        self.foot_text = "Ctrl+Y preview   ·   Ctrl+Enter reveal or run in terminal   ·   Ctrl+C copy   ·   Alt+A all apps"
         self.footer = Gtk.Label(label="Ctrl+Y preview   ·   Ctrl+Enter reveal or run in terminal   ·   Ctrl+C copy   ·   Alt+A all apps", xalign=0)
         self.footer.get_style_context().add_class("foot"); box.pack_start(self.footer, False, False, 0)
         self.items = []; self.timer = 0; self.focused = False; self.deep_q = None
@@ -1186,7 +1231,7 @@ class Spot(Gtk.Window):
         idx = row.get_index(); it = self.items[idx]; p = self.item_path(it)
         if not p:
             return
-        self.prev = (list(self.items), self.entry.get_text().strip(), idx)
+        self.prev = (self.items, self.entry.get_text().strip(), idx)
         self.mode = "preview"
         for c in self.list.get_children(): self.list.remove(c)
         self.clear_home()
@@ -1201,9 +1246,9 @@ class Spot(Gtk.Window):
 
     def leave_preview(self):
         items, q, idx = self.prev
-        self.render(items, q)
+        self.render(items, q); self.add_rows(idx + 12)
         r = self.list.get_row_at_index(idx)
-        if r: self.list.select_row(r)
+        if r: self.list.select_row(r); GLib.idle_add(self.scroll_row, r)
 
     def preview_widget(self, p):
         from gi.repository import GdkPixbuf
@@ -1253,9 +1298,10 @@ class Spot(Gtk.Window):
         self.clear_home(); self.home.set_visible(False)
         for c in self.list.get_children():
             self.list.remove(c)
-        self.items = list(found)
-        for n, it in enumerate(self.items):
-            row = Gtk.ListBoxRow(); row.add(self.make_row(it, n)); self.list.add(row)
+        self.items = Results(found); self.items.note = getattr(found, "note", None)
+        self.nrows = 0; self.lsc.get_vadjustment().set_value(0)
+        self.footer.set_text(self.items.note or self.foot_text)
+        self.add_rows(ROWCHUNK)
         if note or (q and not self.items):
             lab = Gtk.Label(label=note or "No results", xalign=0); lab.get_style_context().add_class("empty")
             r = Gtk.ListBoxRow(); r.set_selectable(False); r.set_activatable(False); r.add(lab); self.list.add(r)
@@ -1266,6 +1312,21 @@ class Spot(Gtk.Window):
         if self.items:
             self.list.select_row(self.list.get_row_at_index(0))
         self.set_width(860)
+
+    def add_rows(self, upto):                              # long listings are drawn a chunk at a time, more as you scroll or arrow down
+        upto = min(upto, len(self.items))
+        for n in range(self.nrows, upto):
+            row = Gtk.ListBoxRow(); row.add(self.make_row(self.items[n], n)); self.list.add(row); row.show_all()
+        self.nrows = max(self.nrows, upto)
+
+    def on_list_scroll(self, adj):
+        if self.mode == "list" and self.nrows < len(self.items) and adj.get_upper() - adj.get_value() - adj.get_page_size() < 400:
+            self.add_rows(self.nrows + ROWCHUNK)
+
+    def scroll_row(self, row):
+        if row and row.get_allocated_height() > 1:
+            a = row.get_allocation(); self.lsc.get_vadjustment().clamp_page(a.y, a.y + a.height)
+        return False
 
     def start_deep(self, q):
         import threading
@@ -1298,8 +1359,9 @@ class Spot(Gtk.Window):
         t.get_style_context().add_class("t")
         if it.kind == "Calc": t.get_style_context().add_class("big")
         v.pack_start(t, False, False, 0)
-        if it.sub:
-            s = Gtk.Label(label=it.sub, xalign=0); s.set_ellipsize(Pango.EllipsizeMode.MIDDLE); s.set_max_width_chars(80); s.get_style_context().add_class("s")
+        sub = it.sub() if callable(it.sub) else it.sub
+        if sub:
+            s = Gtk.Label(label=sub, xalign=0); s.set_ellipsize(Pango.EllipsizeMode.MIDDLE); s.set_max_width_chars(80); s.get_style_context().add_class("s")
             v.pack_start(s, False, False, 0)
         h.pack_start(v, True, True, 0)
         if n < 9:
@@ -1314,7 +1376,12 @@ class Spot(Gtk.Window):
         if not self.items:
             return
         cur = self.list.get_selected_row(); i = cur.get_index() if cur else -1
-        self.list.select_row(self.list.get_row_at_index((i + d) % len(self.items)))
+        n = len(self.items); j = i + d
+        if n > self.nrows:                                 # a long listing: clamp instead of wrapping, and draw the rows we are heading for
+            j = max(0, min(n - 1, j)); self.add_rows(j + 12)
+        else: j %= n
+        row = self.list.get_row_at_index(j); self.list.select_row(row)
+        GLib.idle_add(self.scroll_row, row)
 
     def vmove(self, d):                                    # up/down in the home view: grid row <-> file list
         if not self.home_items: return
@@ -1485,7 +1552,7 @@ def main():
         load_apps()
         q = " ".join(a for a in sys.argv[1:] if a != "--search")
         for it in search(q):
-            print(f"{it.score:7.1f}  {it.kind:7} {it.title}  |  {it.sub}")
+            print(f"{it.score:7.1f}  {it.kind:7} {it.title}  |  {it.sub() if callable(it.sub) else it.sub}")
         return
     if "--import-greenclip" in sys.argv:
         import_greenclip(); return

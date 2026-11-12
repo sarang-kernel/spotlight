@@ -35,7 +35,7 @@ Every kind of query, every key, how the clipboard history, timers and deep searc
 | a name | apps (recents first), open windows, files and folders (`plocate`), bookmarks (Chrome, Firefox/Zen, qutebrowser) |
 | `15% of 80`, `5 km in mi`, `20 c in f`, `=2+2` | calculator and unit converter (`qalc`) |
 | `c word` | clipboard history: text and images, searchable (recorded by the same process, no polling daemon) |
-| `kind:pdf in:thesis modified:week` | file filters |
+| `filetype:pdf`, `.pdf`, `.docx`, `.mov` (any extension), `kind:pdf in:thesis modified:week` | every file of a type, newest first, scrollable (no top-10 cap) |
 | `:smile` | emoji |
 | `timer 25m`, `remind in 10m call back`, `remind 15:30 stand up` | timers and reminders that ring in a window (`alarm.py`) |
 | `/ phrase` | deep full-text search with `ripgrep` (PDFs through `pdftotext`, cached) |
